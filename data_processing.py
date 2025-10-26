@@ -3,7 +3,9 @@ Main data processing function for imported csv values in data directory.
 """
 import os
 import glob
+from typing import Dict
 import pandas as pd
+import numpy as np
 
 def load_all_csvs(folder_path):
     """
@@ -30,28 +32,83 @@ def load_all_csvs(folder_path):
 
     return combined_df
 
-def calculate_player_averages(df, player_name, stat_header, position_header):
+
+def aggregate_rate_by_player_pos_vlvl(
+    df: pd.DataFrame,
+    player_col: str = 'Title',
+    pos_col: str = 'POS',
+    vlvl_col: str = 'VLvl',
+    numerator_col: str = 'WAR',
+    denominator_col: str = 'PA',
+    scale: float = 600.0,
+    numerator_out_name: str | None = None,
+    denominator_out_name: str | None = None,
+    rate_out_name: str | None = None,
+) -> pd.DataFrame:
     """
-    Groups by player name and calculates the average for their stat columns.
+    Generic aggregator that sums numerator and denominator by player/position/VLvl
+    and computes (numerator_sum / denominator_sum) * scale.
 
-    Args:
-        df: The combined dataframe of all csvs.
-        player_name: The player name to calculate the average stats of.
-        stat_columns: The columns that will be averaged.
-        position_header: The position that'll be grouped by. 
-
-    Returns:
-        player_averages: Dataframe containing the average of each stat for each player.
-
-    Raises:
-        RuntimeError: Dataframe is empty or misconfigured
+    Returns a DataFrame containing:
+      player_col, pos_col, vlvl_col, <denominator_out>, <numerator_out>, <rate_out>
     """
-    grouping_cols = [player_name, position_header]
-    required_cols = [player_name]
+    df = df.copy()
 
-    if df.empty or not all(col in df.columns for col in required_cols):
-        raise RuntimeError("DataFrame is empty or required columns were not found.")
+    df[denominator_col] = (
+        pd.to_numeric(df.get(denominator_col, 0), errors='coerce').fillna(0)
+    )
+    df[numerator_col] = (
+        pd.to_numeric(df.get(numerator_col, 0), errors='coerce').fillna(0)
+    )
 
-    player_averages = df.groupby(grouping_cols)[stat_header].mean()
+    agg = (
+        df
+        .groupby([player_col, pos_col, vlvl_col], as_index=False)
+        .agg({denominator_col: 'sum', numerator_col: 'sum'})
+    )
 
-    return player_averages
+    denom_name = denominator_out_name or denominator_col
+    num_name = numerator_out_name or numerator_col
+    if rate_out_name:
+        rate_name = rate_out_name
+    else:
+        rate_name = f"{numerator_col}_per_{int(scale)}_{denom_name}"
+
+    agg = agg.rename(columns={denominator_col: denom_name, numerator_col: num_name})
+    agg[rate_name] = np.where(
+        agg[denom_name] > 0,
+        agg[num_name] / agg[denom_name] * scale,
+        np.nan)
+
+    return agg
+
+
+def top_by_position(
+    agg_df: pd.DataFrame,
+    denom_col: str,
+    min_denom: float,
+    rate_col: str,
+    top_n: int = 5,
+    player_col: str = 'Title',
+    pos_col: str = 'POS',
+    vlvl_col: str = 'VLvl',
+) -> Dict[str, pd.DataFrame]:
+    """
+    Generic top-N selector by position.
+    Returns a dict mapping position -> top-N DataFrame containing:
+      player_col, vlvl_col, denom_col, rate_col (in that order).
+    """
+    eligible = agg_df[agg_df[denom_col] >= min_denom].copy()
+    if eligible.empty:
+        return {}
+
+    result: Dict[str, pd.DataFrame] = {}
+    for pos in sorted(eligible[pos_col].unique()):
+        pos_df = eligible[eligible[pos_col] == pos].sort_values(
+            by=rate_col, ascending=False
+            ).head(top_n)
+        if not pos_df.empty:
+            cols = [player_col, vlvl_col, denom_col, rate_col]
+            cols = [c for c in cols if c in pos_df.columns]
+            result[pos] = pos_df[cols].reset_index(drop=True)
+    return result
