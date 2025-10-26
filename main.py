@@ -8,20 +8,20 @@ from data_processing import (
     PlayerRateSpec,
 )
 
+DATA_FOLDER = 'data'
+
+PLAYER_NAME_COLUMN = 'Title'
+POSITION_COLUMN = 'POS'
+VLVL_COLUMN = 'VLvl'
+
+MIN_PA = 600
+MIN_IP = 200
+TOP_N_BAT = 5
+TOP_N_PIT = 10
+
 
 def main():
     """Main function to run the data analysis workflow."""
-
-    DATA_FOLDER = 'data'
-
-    PLAYER_NAME_COLUMN = 'Title'
-    POSITION_COLUMN = 'POS'
-    VLVL_COLUMN = 'VLvl'
-
-    MIN_PA = 600
-    MIN_IP = 200
-    TOP_N_BAT = 5
-    TOP_N_PIT = 10
 
     print("Loading all CSV files...")
     combined_data = load_all_csvs(DATA_FOLDER)
