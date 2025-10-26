@@ -5,6 +5,7 @@ from data_processing import (
     load_all_csvs,
     aggregate_rate_by_player_pos_vlvl,
     top_by_position,
+    PlayerRateSpec,
 )
 
 
@@ -29,54 +30,42 @@ def main():
         print("No data loaded.")
         return
 
-    print("Calculating batter data...")
-    agg_batters = aggregate_rate_by_player_pos_vlvl(
-        combined_data,
+    batter_spec = PlayerRateSpec(
         player_col=PLAYER_NAME_COLUMN,
         pos_col=POSITION_COLUMN,
         vlvl_col=VLVL_COLUMN,
         numerator_col='WAR',
         denominator_col='PA',
         scale=600.0,
-        numerator_out_name='WAR',
-        denominator_out_name='PA',
-        rate_out_name='WAR_per_600_PA',
     )
+
+    print("Calculating batter data...")
+    agg_batters = aggregate_rate_by_player_pos_vlvl(combined_data, batter_spec)
 
     top_batters = top_by_position(
         agg_batters,
-        denom_col='PA',
+        batter_spec,
         min_denom=MIN_PA,
-        rate_col='WAR_per_600_PA',
         top_n=TOP_N_BAT,
-        player_col=PLAYER_NAME_COLUMN,
-        pos_col=POSITION_COLUMN,
-        vlvl_col=VLVL_COLUMN,
     )
 
-    print("Calculating pitcher data...")
-    agg_pitchers = aggregate_rate_by_player_pos_vlvl(
-        combined_data,
+    pitcher_spec = PlayerRateSpec(
         player_col=PLAYER_NAME_COLUMN,
         pos_col=POSITION_COLUMN,
         vlvl_col=VLVL_COLUMN,
         numerator_col='rWAR',
         denominator_col='IP',
         scale=200.0,
-        numerator_out_name='rWAR',
-        denominator_out_name='IP',
-        rate_out_name='rWAR_per_200_IP',
     )
+
+    print("Calculating pitcher data...")
+    agg_pitchers = aggregate_rate_by_player_pos_vlvl(combined_data, pitcher_spec)
 
     top_pitchers = top_by_position(
         agg_pitchers,
-        denom_col='IP',
+        pitcher_spec,
         min_denom=MIN_IP,
-        rate_col='rWAR_per_200_IP',
         top_n=TOP_N_PIT,
-        player_col=PLAYER_NAME_COLUMN,
-        pos_col=POSITION_COLUMN,
-        vlvl_col=VLVL_COLUMN,
     )
 
     if not top_batters:
