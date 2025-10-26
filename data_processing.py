@@ -3,6 +3,7 @@ Main data processing function for imported csv values in data directory.
 """
 import os
 import glob
+from dataclasses import dataclass
 from typing import Dict
 import pandas as pd
 import numpy as np
@@ -33,71 +34,97 @@ def load_all_csvs(folder_path):
     return combined_df
 
 
+@dataclass
+class PlayerRateSpec:
+    """
+    Specification for a player rate aggregation.
+
+    Example for batters (WAR per 600 PA):
+      PlayerRateSpec(numerator_col='WAR', denominator_col='PA', scale=600.0)
+    """
+    player_col: str = 'Title'
+    pos_col: str = 'POS'
+    vlvl_col: str = 'VLvl'
+    numerator_col: str = 'WAR'
+    denominator_col: str = 'PA'
+    scale: float = 600.0
+
+    def denom_name(self) -> str: # pylint: disable=C0116
+        return self.denominator_col
+
+    def num_name(self) -> str: # pylint: disable=C0116
+        return self.numerator_col
+
+    def rate_name(self) -> str: # pylint: disable=C0116
+        return f"{self.numerator_col}_per_{int(self.scale)}_{self.denominator_col}"
+
+
 def aggregate_rate_by_player_pos_vlvl(
     df: pd.DataFrame,
-    player_col: str = 'Title',
-    pos_col: str = 'POS',
-    vlvl_col: str = 'VLvl',
-    numerator_col: str = 'WAR',
-    denominator_col: str = 'PA',
-    scale: float = 600.0,
-    numerator_out_name: str | None = None,
-    denominator_out_name: str | None = None,
-    rate_out_name: str | None = None,
+    spec: PlayerRateSpec,
 ) -> pd.DataFrame:
     """
     Generic aggregator that sums numerator and denominator by player/position/VLvl
-    and computes (numerator_sum / denominator_sum) * scale.
+    according to the provided PlayerRateSpec and computes 
+    (numerator_sum / denominator_sum) * scale.
 
     Returns a DataFrame containing:
-      player_col, pos_col, vlvl_col, <denominator_out>, <numerator_out>, <rate_out>
+      spec.player_col, spec.pos_col, spec.vlvl_col,
+      <denom_name>, <num_name>, <rate_name>
     """
     df = df.copy()
 
-    df[denominator_col] = (
-        pd.to_numeric(df.get(denominator_col, 0), errors='coerce').fillna(0)
+    df[spec.denominator_col] = (
+        pd.to_numeric(df.get(spec.denominator_col, 0), errors='coerce').fillna(0)
     )
-    df[numerator_col] = (
-        pd.to_numeric(df.get(numerator_col, 0), errors='coerce').fillna(0)
+    df[spec.numerator_col] = (
+        pd.to_numeric(df.get(spec.numerator_col, 0), errors='coerce').fillna(0)
     )
 
     agg = (
         df
-        .groupby([player_col, pos_col, vlvl_col], as_index=False)
-        .agg({denominator_col: 'sum', numerator_col: 'sum'})
+        .groupby([spec.player_col, spec.pos_col, spec.vlvl_col], as_index=False)
+        .agg({spec.denominator_col: 'sum', spec.numerator_col: 'sum'})
     )
 
-    denom_name = denominator_out_name or denominator_col
-    num_name = numerator_out_name or numerator_col
-    if rate_out_name:
-        rate_name = rate_out_name
-    else:
-        rate_name = f"{numerator_col}_per_{int(scale)}_{denom_name}"
+    denom_out = spec.denom_name()
+    num_out = spec.num_name()
+    rate_out = spec.rate_name()
 
-    agg = agg.rename(columns={denominator_col: denom_name, numerator_col: num_name})
-    agg[rate_name] = np.where(
-        agg[denom_name] > 0,
-        agg[num_name] / agg[denom_name] * scale,
-        np.nan)
+    agg = agg.rename(
+        columns={spec.denominator_col: denom_out, spec.numerator_col: num_out}
+    )
+    agg[rate_out] = np.where(
+        agg[denom_out] > 0,
+        agg[num_out] / agg[denom_out] * spec.scale,
+        np.nan
+    )
 
     return agg
 
 
 def top_by_position(
     agg_df: pd.DataFrame,
-    denom_col: str,
+    spec: PlayerRateSpec,
     min_denom: float,
-    rate_col: str,
     top_n: int = 5,
-    player_col: str = 'Title',
-    pos_col: str = 'POS',
-    vlvl_col: str = 'VLvl',
 ) -> Dict[str, pd.DataFrame]:
     """
-    Generic top-N selector by position.
+    Generic top-N selector by position driven by a PlayerRateSpec.
+
     Returns a dict mapping position -> top-N DataFrame containing:
-      player_col, vlvl_col, denom_col, rate_col (in that order).
+      spec.player_col, spec.vlvl_col, <denom_out>,
+      <rate_out> (in that order, when present).
     """
+    denom_col = spec.denom_name()
+    rate_col = spec.rate_name()
+    player_col = spec.player_col
+    pos_col = spec.pos_col
+    vlvl_col = spec.vlvl_col
+
+    if denom_col not in agg_df.columns or rate_col not in agg_df.columns:
+        return {}
+
     eligible = agg_df[agg_df[denom_col] >= min_denom].copy()
     if eligible.empty:
         return {}
@@ -106,7 +133,7 @@ def top_by_position(
     for pos in sorted(eligible[pos_col].unique()):
         pos_df = eligible[eligible[pos_col] == pos].sort_values(
             by=rate_col, ascending=False
-            ).head(top_n)
+        ).head(top_n)
         if not pos_df.empty:
             cols = [player_col, vlvl_col, denom_col, rate_col]
             cols = [c for c in cols if c in pos_df.columns]
