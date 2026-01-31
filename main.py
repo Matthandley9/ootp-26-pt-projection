@@ -5,6 +5,9 @@ from data_processing import (
     load_all_csvs,
     aggregate_rate_by_player_pos_vlvl,
     top_by_position,
+    weighted_eye_vs_bb_rate,
+    weighted_eye_regression,
+    plot_weighted_eye_vs_bb,
     PlayerRateSpec,
 )
 
@@ -87,6 +90,33 @@ def main():
             print(f"Position: {pos}")
             print(pos_df.to_string(index=False, float_format='{:,.3f}'.format))
             print()
+
+    df = load_all_csvs('data')
+    summary_df, corr = weighted_eye_vs_bb_rate(df)  # uses defaults tailored to your data
+    print('Pearson correlation weighted_eye vs BB/PA:', corr)
+    if summary_df is None or summary_df.empty:
+        print("No weighted EYE summary could be computed."
+              " Check that your CSVs contain the expected columns:"
+              " 'EYE vL', 'EYE vR', 'BB', 'PA' and that pitcher rows "
+              "have 'POS' in ('SP','RP','CL') and hand 'T'.")
+        print('Available columns in data:', ', '.join(df.columns.tolist()))
+    else:
+        print(summary_df.sort_values(
+            'weighted_eye', ascending=False).head(20).to_string(index=False)
+        )
+
+        # Fit a weighted regression on the summary (weights = PA)
+        model = weighted_eye_regression(summary_df)
+        print('\nWeighted regression model:', model)
+
+        # Create scatter plot of weighted_eye vs bb_per_pa and open it
+        try:
+            img = plot_weighted_eye_vs_bb(summary_df, model=model,
+                                          out_path='output/eye_vs_bb.png', show=True
+                    )
+            print('Saved plot to', img)
+        except RuntimeError as exc:
+            print('Plotting failed:', exc)
 
 
 if __name__ == "__main__":
