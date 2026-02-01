@@ -136,7 +136,6 @@ class PlotRequest:
     spec: dict
     name: str
     out_dir: str
-    do_plot: bool = True
 
 
 def _prepare_numeric_columns(
@@ -685,8 +684,7 @@ def run_multiple_vlr_regressions(
     df: pd.DataFrame,
     specs: Sequence[dict],
     out_dir: str = 'output',
-    plot: bool = True,
-):
+) -> list:
     """Run multiple vl/vr -> target regressions.
 
     Each spec is a dict with keys: 'vl', 'vr', 'num', optional 'denom', and 'name'.
@@ -713,7 +711,7 @@ def run_multiple_vlr_regressions(
             denom=denom,
         )
 
-        plot_path = _maybe_plot_spec(PlotRequest(summary, model, spec, name, out_dir, plot))
+        plot_path = _maybe_plot_spec(PlotRequest(summary, model, spec, name, out_dir))
 
         results.append((spec, summary, model, corr, plot_path))
 
@@ -726,30 +724,38 @@ def _maybe_plot_spec(request: PlotRequest) -> Optional[str]:
     This helper pulls the plotting logic out of the loop to keep the
     caller's local-variable count low.
     """
-    if (not request.do_plot or request.summary is None
-    or request.summary.empty or request.model is None):
+    # plotting is mandatory for this helper; bail out only on missing data
+    if request.summary is None or request.summary.empty or request.model is None:
         return None
 
     plot_path = os.path.join(request.out_dir, f"{request.name.replace(' ', '_')}.png")
     _ensure_output_dir(plot_path)
 
     try:
+        vl = request.spec.get('vl')
+        vr = request.spec.get('vr')
+        num = request.spec.get('num')
+        denom = request.spec.get('denom')
+
+        predictor_label = f"weighted ({vl}|{vr})"
+        target_label = f"{num}/{denom}" if denom else f"{num}"
+
+        labels_cfg = PlotConfig(
+            predictor_label=predictor_label,
+            target_label=target_label,
+            title=f"{request.name}: {predictor_label} vs {target_label}",
+        )
+
+        params_obj = PlotParams(
+            model=request.model,
+            out_path=plot_path,
+            show=False,
+            labels=labels_cfg,
+        )
+
         plot_weighted_predictor_vs_target(
             request.summary.rename(columns={'predictor': 'weighted_eye', 'target': 'bb_per_pa'}),
-            PlotParams(
-                model=request.model,
-                out_path=plot_path,
-                show=False,
-                labels=PlotConfig(
-                    predictor_label=f"weighted ({request.spec.get('vl')}|{request.spec.get('vr')})",
-                    target_label=(f"{request.spec.get('num')}/{request.spec.get('denom')}"
-                                  if request.spec.get('denom') else f"{request.spec.get('num')}"),
-                    title=(f"{request.name}: weighted ({request.spec.get('vl')}|"
-                           f"{request.spec.get('vr')}) "
-                           f"vs {(f'{request.spec.get('num')}/{request.spec.get('denom')}') if
-                                 request.spec.get('denom') else request.spec.get('num')}"),
-                ),
-            ),
+            params_obj,
         )
         return plot_path
     except RuntimeError:
