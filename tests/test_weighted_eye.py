@@ -5,8 +5,8 @@ import pandas as pd
 
 from data_processing import (
     compute_pitcher_hand_ip_shares,
-    weighted_eye_vs_bb_rate,
-    weighted_eye_regression
+    compute_weighted_predictor_vs_rate,
+    fit_weighted_regression
 )
 
 
@@ -37,7 +37,7 @@ def test_weighted_eye_and_correlation():
     assert math.isclose(wL, 0.2, rel_tol=1e-9)
     assert math.isclose(wR, 0.8, rel_tol=1e-9)
 
-    summary, corr = weighted_eye_vs_bb_rate(df,
+    summary, corr = compute_weighted_predictor_vs_rate(df,
                                            eye_vl_col='EYE vL',
                                            eye_vr_col='EYE vR',
                                            bb_col='BB',
@@ -88,7 +88,7 @@ def test_weighted_regression():
         'PA': pa,
     })
 
-    model = weighted_eye_regression(df, eye_col='weighted_eye',
+    model = fit_weighted_regression(df, eye_col='weighted_eye',
                                     target_col='bb_per_pa', weight_col='PA'
             )
     assert model is not None

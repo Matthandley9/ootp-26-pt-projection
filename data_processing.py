@@ -5,8 +5,7 @@ Main data processing function for imported csv values in data directory.
 import os
 import glob
 from dataclasses import dataclass
-from typing import Dict
-from typing import Tuple, Optional, Sequence
+from typing import Dict, Tuple, Optional, Sequence
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -63,8 +62,8 @@ class PlayerRateSpec:  # pylint: disable=R0902
 
 
 @dataclass
-class EyePipelineConfig:
-    """Configuration for the weighted-eye -> BB/PA pipeline.
+class PredictorPipelineConfig:
+    """Configuration for the weighted predictor -> target pipeline.
 
     This bundles many small parameters.
     """
@@ -79,9 +78,70 @@ class EyePipelineConfig:
     hand_col: str = 'T'
 
 
+@dataclass
+class VLRSpec:
+    """Specification object for a VL/VR -> target regression."""
+    vl: Optional[str] = None
+    vr: Optional[str] = None
+    num: str = 'BB'
+    denom: Optional[str] = 'PA'
+    weight_col: str = 'PA'
+    player_col: str = 'Title'
+    pos_col: str = 'POS'
+    pitcher_pos_markers: Sequence[str] = ('SP', 'RP', 'CL')
+    ip_col: str = 'IP'
+    hand_col: str = 'T'
+
+
+@dataclass
+class PlotConfig:
+    """Configuration for plot labels and title."""
+    predictor_label: Optional[str] = None
+    target_label: Optional[str] = None
+    title: Optional[str] = None
+
+
+@dataclass
+class PlotParams:
+    """Container for plot parameters to keep function arg count low.
+
+    Fields mirror the previous plot function arguments so call sites
+    can pass a single object.
+    """
+    model: Optional[dict] = None
+    weight_col: str = 'PA'
+    out_path: str = 'output/eye_vs_bb.png'
+    show: bool = True
+    labels: Optional[PlotConfig] = None
+
+
+@dataclass
+class RunPlotInfo:
+    """Small container for per-spec plot metadata used in the runner.
+
+    Grouping these values reduces the number of local variables in
+    `run_multiple_vlr_regressions` so it stays under the pylint limit.
+    """
+    plot_path: Optional[str] = None
+    plot_name: Optional[str] = None
+    predictor_label: Optional[str] = None
+    target_label: Optional[str] = None
+
+
+@dataclass
+class PlotRequest:
+    """Lightweight request object passed to the plotting helper."""
+    summary: pd.DataFrame
+    model: Optional[dict]
+    spec: dict
+    name: str
+    out_dir: str
+    do_plot: bool = True
+
+
 def _prepare_numeric_columns(
     frame: pd.DataFrame,
-    cfg: EyePipelineConfig,
+    cfg: PredictorPipelineConfig,
 ) -> pd.DataFrame:
     """Coerce important columns to numeric types on a DataFrame copy.
 
@@ -107,7 +167,7 @@ def _prepare_numeric_columns(
 
 def _aggregate_player_metrics(
     frame: pd.DataFrame,
-    cfg: EyePipelineConfig,
+    cfg: PredictorPipelineConfig,
 ) -> pd.DataFrame:
     """Return per-player aggregated metrics (PA, BB and per-side EYE).
 
@@ -157,7 +217,7 @@ def _aggregate_player_metrics(
 
 def _compute_weighted_eye(
     per_player: pd.DataFrame,
-    cfg: EyePipelineConfig,
+    cfg: PredictorPipelineConfig,
     w_l: float,
     w_r: float,
 ) -> pd.Series:
@@ -177,7 +237,7 @@ def _compute_weighted_eye(
     return vl_series.fillna(0.0) * w_l + vr_series.fillna(0.0) * w_r
 
 
-def _compute_bb_per_pa(per_player: pd.DataFrame, cfg: EyePipelineConfig) -> pd.Series:
+def _compute_bb_per_pa(per_player: pd.DataFrame, cfg: PredictorPipelineConfig) -> pd.Series:
     have_bb = cfg.bb_col in per_player.columns
     have_pa = cfg.pa_col in per_player.columns
     if have_bb and have_pa:
@@ -314,9 +374,9 @@ def compute_pitcher_hand_ip_shares(
     return 0.5, 0.5
 
 
-def weighted_eye_vs_bb_rate(
+def compute_weighted_predictor_vs_rate(
     df: pd.DataFrame,
-    config: Optional[EyePipelineConfig] = None,
+    config: Optional[PredictorPipelineConfig] = None,
     **kwargs,
 ) -> Tuple[pd.DataFrame, Optional[float]]:
     """
@@ -340,7 +400,7 @@ def weighted_eye_vs_bb_rate(
     # Allow callers to pass a config object, rely on defaults, or use
     # legacy keyword-arguments. Accepting **kwargs keeps the function
     # backward-compatible with older tests/callers.
-    cfg = config or EyePipelineConfig()
+    cfg = config or PredictorPipelineConfig()
     if kwargs:
         # only keep known config keys
         valid_keys = {
@@ -350,7 +410,7 @@ def weighted_eye_vs_bb_rate(
         filtered = {k: v for k, v in kwargs.items() if k in valid_keys}
         if filtered:
             # create a new config overriding defaults from filtered kwargs
-            cfg = EyePipelineConfig(**{**cfg.__dict__, **filtered})
+            cfg = PredictorPipelineConfig(**{**cfg.__dict__, **filtered})
 
     # compute weights for L/R pitchers
     w_l, w_r = compute_pitcher_hand_ip_shares(
@@ -390,7 +450,7 @@ def weighted_eye_vs_bb_rate(
     return out, corr
 
 
-def weighted_eye_regression(
+def fit_weighted_regression(
     summary_df: pd.DataFrame,
     eye_col: str = 'weighted_eye',
     target_col: str = 'bb_per_pa',
@@ -515,12 +575,190 @@ def _ensure_output_dir(out_path: str) -> None:
         os.makedirs(out_dir, exist_ok=True)
 
 
-def plot_weighted_eye_vs_bb(
+def _weighted_vlr_impl(
+        df: pd.DataFrame, spec: VLRSpec
+    ) -> Tuple[pd.DataFrame, Optional[dict], Optional[float]]:
+    """Internal implementation that accepts a VLRSpec object.
+
+    Keeping most logic in this small helper reduces the number of local
+    variables in the public wrapper and makes lint rules easier to satisfy.
+    """
+    if (spec.vl not in df.columns) and (spec.vr not in df.columns):
+        return pd.DataFrame(), None, None
+
+    cfg = PredictorPipelineConfig(
+        eye_vl_col=spec.vl,
+        eye_vr_col=spec.vr,
+        bb_col=spec.num,
+        pa_col=spec.weight_col,
+        player_col=spec.player_col,
+        pos_col=spec.pos_col,
+        pitcher_pos_markers=spec.pitcher_pos_markers,
+        ip_col=spec.ip_col,
+        hand_col=spec.hand_col,
+    )
+
+    work = _prepare_numeric_columns(df.copy(), cfg)
+    per_player = _aggregate_player_metrics(work, cfg)
+
+    w_l, w_r = compute_pitcher_hand_ip_shares(
+        df, pos_col=spec.pos_col, pitcher_pos_markers=spec.pitcher_pos_markers,
+        ip_col=spec.ip_col, hand_col=spec.hand_col,
+    )
+
+    predictor = _compute_weighted_eye(per_player, cfg, w_l, w_r)
+
+    if spec.denom is not None and spec.denom in per_player.columns:
+        target = per_player[spec.num] / per_player[spec.denom].replace({0: np.nan})
+    else:
+        target = per_player.get(spec.num, pd.Series(np.nan, index=per_player.index))
+
+    out = pd.DataFrame({
+        spec.player_col: per_player[spec.player_col],
+        'predictor': predictor,
+        'target': target,
+    })
+    if spec.weight_col in per_player.columns:
+        out[spec.weight_col] = per_player.get(spec.weight_col, 0)
+
+    valid = out.dropna(subset=['predictor', 'target'])
+    corr = None
+    model = None
+    if not valid.empty:
+        corr = valid['predictor'].corr(valid['target'])
+        if spec.weight_col in valid.columns:
+            model = fit_weighted_regression(
+                out,
+                eye_col='predictor',
+                target_col='target',
+                weight_col=spec.weight_col,
+            )
+        else:
+            model = _fit_unweighted_from_series(valid['predictor'], valid['target'])
+
+    return out, model, corr
+
+
+def weighted_vlr_regression(
+        df: pd.DataFrame, spec: Optional[VLRSpec] = None, **kwargs
+    ) -> Tuple[pd.DataFrame, Optional[dict], Optional[float]]:
+    """Public wrapper for VL/VR regressions.
+
+    This accepts either a pre-built `VLRSpec` or legacy keyword arguments.
+    Converting callers to pass a `VLRSpec` is recommended, but keywords are
+    supported for backward compatibility.
+    """
+    if spec is None:
+        # Accept either the older keyword names (vl_col, vr_col, target_num_col)
+        # or the short keys (vl, vr, num, denom).
+        spec = VLRSpec(
+            vl=kwargs.get('vl_col') or kwargs.get('vl'),
+            vr=kwargs.get('vr_col') or kwargs.get('vr'),
+            num=kwargs.get('target_num_col') or kwargs.get('num'),
+            denom=kwargs.get('target_denom_col') or kwargs.get('denom', 'PA'),
+            weight_col=kwargs.get('weight_col', 'PA'),
+            player_col=kwargs.get('player_col', 'Title'),
+            pos_col=kwargs.get('pos_col', 'POS'),
+            pitcher_pos_markers=kwargs.get('pitcher_pos_markers', ('SP', 'RP', 'CL')),
+            ip_col=kwargs.get('ip_col', 'IP'),
+            hand_col=kwargs.get('hand_col', 'T'),
+        )
+
+    return _weighted_vlr_impl(df, spec)
+
+
+def _fit_unweighted_from_series(x_series: pd.Series, y_series: pd.Series) -> Optional[dict]:
+    """Fit a WLS model with equal weights from two pandas Series.
+
+    This helper centralizes array creation for unweighted fits so the main
+    implementation function keeps its local-variable count low.
+    """
+    x = pd.to_numeric(x_series, errors='coerce').to_numpy(dtype=float)
+    y = pd.to_numeric(y_series, errors='coerce').to_numpy(dtype=float)
+    if x.size < 2 or y.size < 2:
+        return None
+    w = np.ones_like(x)
+    return _fit_weighted_wls(x, y, w)
+
+
+def run_multiple_vlr_regressions(
+    df: pd.DataFrame,
+    specs: Sequence[dict],
+    out_dir: str = 'output',
+    plot: bool = True,
+):
+    """Run multiple vl/vr -> target regressions.
+
+    Each spec is a dict with keys: 'vl', 'vr', 'num', optional 'denom', and 'name'.
+    Returns a list of results: (spec, summary_df, model, corr, plot_path_or_None)
+    """
+    results = []
+    for spec in specs:
+        vl = spec.get('vl')
+        vr = spec.get('vr')
+        num = spec.get('num')
+        denom = spec.get('denom', 'PA')
+        name = spec.get('name', f"{vl}_vs_{num}")
+
+        if vl not in df.columns and vr not in df.columns:
+            # nothing to do
+            results.append((spec, pd.DataFrame(), None, None, None))
+            continue
+
+        summary, model, corr = weighted_vlr_regression(
+            df,
+            vl=vl,
+            vr=vr,
+            num=num,
+            denom=denom,
+        )
+
+        plot_path = _maybe_plot_spec(PlotRequest(summary, model, spec, name, out_dir, plot))
+
+        results.append((spec, summary, model, corr, plot_path))
+
+    return results
+
+
+def _maybe_plot_spec(request: PlotRequest) -> Optional[str]:
+    """Return a plot path when plotting is requested and possible, else None.
+
+    This helper pulls the plotting logic out of the loop to keep the
+    caller's local-variable count low.
+    """
+    if (not request.do_plot or request.summary is None
+    or request.summary.empty or request.model is None):
+        return None
+
+    plot_path = os.path.join(request.out_dir, f"{request.name.replace(' ', '_')}.png")
+    _ensure_output_dir(plot_path)
+
+    try:
+        plot_weighted_predictor_vs_target(
+            request.summary.rename(columns={'predictor': 'weighted_eye', 'target': 'bb_per_pa'}),
+            PlotParams(
+                model=request.model,
+                out_path=plot_path,
+                show=False,
+                labels=PlotConfig(
+                    predictor_label=f"weighted ({request.spec.get('vl')}|{request.spec.get('vr')})",
+                    target_label=(f"{request.spec.get('num')}/{request.spec.get('denom')}"
+                                  if request.spec.get('denom') else f"{request.spec.get('num')}"),
+                    title=(f"{request.name}: weighted ({request.spec.get('vl')}|"
+                           f"{request.spec.get('vr')}) "
+                           f"vs {(f'{request.spec.get('num')}/{request.spec.get('denom')}') if
+                                 request.spec.get('denom') else request.spec.get('num')}"),
+                ),
+            ),
+        )
+        return plot_path
+    except RuntimeError:
+        return None
+
+
+def plot_weighted_predictor_vs_target(
     summary_df: pd.DataFrame,
-    model: Optional[dict] = None,
-    weight_col: str = 'PA',
-    out_path: str = 'output/eye_vs_bb.png',
-    show: bool = True,
+    params: PlotParams,
 ) -> Optional[str]:
     """
     Create a scatter plot of weighted_eye vs bb_per_pa.
@@ -534,7 +772,7 @@ def plot_weighted_eye_vs_bb(
     if summary_df is None or summary_df.empty:
         print('No summary data to plot.')
         return None
-    prepared = _prepare_plot_data(summary_df, weight_col)
+    prepared = _prepare_plot_data(summary_df, params.weight_col)
     if prepared is None:
         print('No valid points to plot (need weighted_eye and bb_per_pa).')
         return None
@@ -542,29 +780,41 @@ def plot_weighted_eye_vs_bb(
 
     plt.figure(figsize=(8, 6))
     plt.scatter(x, y, s=sizes, alpha=0.6, edgecolors='k')
-    plt.xlabel('weighted_eye')
-    plt.ylabel('BB per PA')
-    plt.title('weighted_eye vs BB/PA (point size ~ PA)')
+    if params.labels is not None and params.labels.predictor_label:
+        predictor_label = params.labels.predictor_label
+    else:
+        predictor_label = 'weighted_eye'
+    if params.labels is not None and params.labels.target_label:
+        target_label = params.labels.target_label
+    else:
+        target_label = 'BB per PA'
+    plt.xlabel(predictor_label)
+    plt.ylabel(target_label)
+    title_text = (
+        params.labels.title if params.labels is not None and params.labels.title is not None
+        else 'weighted_eye vs BB/PA (point size ~ PA)'
+    )
+    plt.title(title_text)
 
-    if model is not None and 'slope' in model and 'intercept' in model:
+    if params.model is not None and 'slope' in params.model and 'intercept' in params.model:
         ax = plt.gca()
-        _plot_regression_and_r2(ax, model, x)
+        _plot_regression_and_r2(ax, params.model, x)
 
-    _ensure_output_dir(out_path)
+    _ensure_output_dir(params.out_path)
 
     plt.tight_layout()
-    plt.savefig(out_path)
+    plt.savefig(params.out_path)
     plt.close()
 
-    if show:
+    if params.show:
         try:
             # Only attempt to open the file if it actually exists. On some
             # environments plt.savefig may not write the file or the path may
             # be invalid; avoid raising an unhandled FileNotFoundError.
-            if os.path.exists(out_path):
-                os.startfile(out_path)
+            if os.path.exists(params.out_path):
+                os.startfile(params.out_path)
         except OSError:
             # Any issue opening the image is non-fatal for the pipeline.
             pass
 
-    return out_path
+    return params.out_path

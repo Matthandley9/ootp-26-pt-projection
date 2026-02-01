@@ -5,10 +5,9 @@ from data_processing import (
     load_all_csvs,
     aggregate_rate_by_player_pos_vlvl,
     top_by_position,
-    weighted_eye_vs_bb_rate,
-    weighted_eye_regression,
-    plot_weighted_eye_vs_bb,
+    # predictor/plot helpers are available in data_processing if needed
     PlayerRateSpec,
+    run_multiple_vlr_regressions,
 )
 
 DATA_FOLDER = 'data'
@@ -22,26 +21,8 @@ MIN_IP = 200
 TOP_N_BAT = 5
 TOP_N_PIT = 10
 
-
-def main():
-    """Main function to run the data analysis workflow."""
-
-    print("Loading all CSV files...")
-    combined_data = load_all_csvs(DATA_FOLDER)
-
-    if combined_data.empty:
-        print("No data loaded.")
-        return
-
-    batter_spec = PlayerRateSpec(
-        player_col=PLAYER_NAME_COLUMN,
-        pos_col=POSITION_COLUMN,
-        vlvl_col=VLVL_COLUMN,
-        numerator_col='WAR',
-        denominator_col='PA',
-        scale=600.0,
-    )
-
+def find_top_players(combined_data, batter_spec):
+    """Find and print top batters and pitchers by specified WAR rates."""
     print("Calculating batter data...")
     agg_batters = aggregate_rate_by_player_pos_vlvl(combined_data, batter_spec)
 
@@ -91,32 +72,95 @@ def main():
             print(pos_df.to_string(index=False, float_format='{:,.3f}'.format))
             print()
 
-    df = load_all_csvs('data')
-    summary_df, corr = weighted_eye_vs_bb_rate(df)  # uses defaults tailored to your data
-    print('Pearson correlation weighted_eye vs BB/PA:', corr)
-    if summary_df is None or summary_df.empty:
-        print("No weighted EYE summary could be computed."
-              " Check that your CSVs contain the expected columns:"
-              " 'EYE vL', 'EYE vR', 'BB', 'PA' and that pitcher rows "
-              "have 'POS' in ('SP','RP','CL') and hand 'T'.")
-        print('Available columns in data:', ', '.join(df.columns.tolist()))
-    else:
-        print(summary_df.sort_values(
-            'weighted_eye', ascending=False).head(20).to_string(index=False)
-        )
 
-        # Fit a weighted regression on the summary (weights = PA)
-        model = weighted_eye_regression(summary_df)
-        print('\nWeighted regression model:', model)
+def main():
+    """Main function to run the data analysis workflow."""
 
-        # Create scatter plot of weighted_eye vs bb_per_pa and open it
-        try:
-            img = plot_weighted_eye_vs_bb(summary_df, model=model,
-                                          out_path='output/eye_vs_bb.png', show=True
-                    )
-            print('Saved plot to', img)
-        except RuntimeError as exc:
-            print('Plotting failed:', exc)
+    print("Loading all CSV files...")
+    combined_data = load_all_csvs(DATA_FOLDER)
+
+    if combined_data.empty:
+        print("No data loaded.")
+        return
+
+    batter_spec = PlayerRateSpec(
+        player_col=PLAYER_NAME_COLUMN,
+        pos_col=POSITION_COLUMN,
+        vlvl_col=VLVL_COLUMN,
+        numerator_col='WAR',
+        denominator_col='PA',
+        scale=600.0,
+    )
+
+    find_top_players(combined_data, batter_spec)
+
+    # Run generalized VL/VR -> metric regressions (BA, GAP, POW, K)
+    specs = [
+        {
+            'name': 'BA_H_over_PA',
+            'vl': 'BA vL',
+            'vr': 'BA vR',
+            'num': 'H',
+            'denom': 'PA',
+        },
+        {
+            'name': 'EYE_BB',
+            'vl': 'EYE vL',
+            'vr': 'EYE vR',
+            'num': 'BB',
+            'denom': 'PA',
+        },
+        {
+            'name': 'GAP_EBH',
+            'vl': 'GAP vL',
+            'vr': 'GAP vR',
+            'num': 'EBH',
+            'denom': 'PA',
+        },
+        {
+            'name': 'POW_HR_over_PA',
+            'vl': 'POW vL',
+            'vr': 'POW vR',
+            'num': 'HR',
+            'denom': 'PA',
+        },
+        {
+            'name': 'K_SO',
+            'vl': 'K vL',
+            'vr': 'K vR',
+            'num': 'SO',
+            'denom': 'PA',
+        },
+    ]
+
+    try:
+        print('\nRunning VL/VR -> metric regressions for BA/GAP/POW/K...')
+        # Skip specs whose numerator column is not present in the dataset
+        runnable = []
+        skipped = []
+        for s in specs:
+            if s.get('num') in combined_data.columns:
+                runnable.append(s)
+            else:
+                skipped.append(s.get('name', s.get('num')))
+
+        if skipped:
+            print('Skipping specs with missing numerator columns:', skipped)
+
+        if not runnable:
+            print('No VL/VR regression specs runnable on this dataset.')
+        else:
+            results = run_multiple_vlr_regressions(
+                combined_data, runnable, out_dir='output', plot=True
+            )
+            print('Completed VL/VR regressions. Results:')
+            for spec, summary, model, pearson, plot_path in results:
+                name = spec.get('name') or spec.get('num')
+                print(f"- {name}: model={'present' if model else 'none'}, "
+                      f"pearson={pearson}, plot={plot_path}"
+                )
+    except RuntimeError as exc:  # defensive: don't crash the main workflow on optional extras
+        print('VL/VR regression runner failed:', exc)
 
 
 if __name__ == "__main__":
