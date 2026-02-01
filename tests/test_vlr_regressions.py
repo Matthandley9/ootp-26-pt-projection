@@ -76,7 +76,7 @@ def test_run_multiple_vlr_regressions(tmp_path):
         {'name': 'H_rate', 'vl': 'EYE vL', 'vr': 'EYE vR', 'num': 'H', 'denom': 'PA'},
     ]
 
-    results = run_multiple_vlr_regressions(df, specs, out_dir=str(tmp_path), plot=False)
+    results = run_multiple_vlr_regressions(df, specs, out_dir=str(tmp_path))
     assert isinstance(results, list)
     assert len(results) == 2
     for item in results:

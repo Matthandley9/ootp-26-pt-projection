@@ -150,9 +150,7 @@ def main():
         if not runnable:
             print('No VL/VR regression specs runnable on this dataset.')
         else:
-            results = run_multiple_vlr_regressions(
-                combined_data, runnable, out_dir='output', plot=True
-            )
+            results = run_multiple_vlr_regressions(combined_data, runnable, out_dir='output')
             print('Completed VL/VR regressions. Results:')
             for spec, summary, model, pearson, plot_path in results:
                 name = spec.get('name') or spec.get('num')
