@@ -211,3 +211,12 @@ data/*
 
 # Pylint
 .plyintrc
+
+# github files
+.github/copilot-instructions.md
+
+# output files
+output/*
+
+# vscode files
+.vscode/*
